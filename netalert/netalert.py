@@ -7,7 +7,6 @@ import json
 import os
 import select
 import socket
-import subprocess
 import sys
 import time
 import traceback
@@ -28,6 +27,7 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 # empty means "use whatever the default output is". Filled in by load_config().
 ALARM_DEVICE = ""
 LOG_FILE = os.path.join(BASE_DIR, "netalert.log")
+LOG_MAX_BYTES = 512 * 1024   # roll over at half a megabyte
 PID_FILE = os.path.join(BASE_DIR, "netalert.pid")
 # The lock lives outside the project folder on purpose: two copies
 # installed in different directories must still refuse to both run,
@@ -235,6 +235,17 @@ def load_config():
 
 
 def log(message):
+    """Append to the log, rolling it over before it can grow without bound.
+
+    This process runs for months at a time, so an unrotated log is a slow
+    disk leak. One previous generation is kept: enough to investigate a
+    missed outage, bounded enough to forget about.
+    """
+    try:
+        if os.path.getsize(LOG_FILE) >= LOG_MAX_BYTES:
+            os.replace(LOG_FILE, LOG_FILE + ".1")
+    except OSError:
+        pass            # no log yet, or it is busy: appending still works
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{stamp}  {message}\n")
@@ -322,6 +333,29 @@ def recovery_chime(output):
     output.play(RECOVERY_TONES)
 
 
+def monitor_loop(monitor, guard, sleep=time.sleep, stop_after=None):
+    """Run the monitor until stopped, always handing back the user's volume.
+
+    An outage raises the speaker to full and unmutes it, and only a recovery
+    puts it back. Without the finally below, a process killed mid-outage -
+    the installer force-stops it, and Windows has killed it for memory before
+    - would leave the machine at full volume permanently.
+    """
+    ticks = 0
+    try:
+        while stop_after is None or ticks < stop_after:
+            try:
+                monitor.tick()
+            except Exception:
+                log("check failed: "
+                    + " | ".join(traceback.format_exc(limit=3).splitlines()[-3:]))
+            ticks += 1
+            sleep(next_delay(monitor))
+    finally:
+        guard.restore()
+    return ticks
+
+
 def acquire_single_instance(path=None):
     """Take an exclusive OS lock, or return False if another copy holds it.
 
@@ -345,15 +379,29 @@ def acquire_single_instance(path=None):
     return True
 
 
-def main():
-    # Optional override for testing: netalert.py --hosts 10.255.255.1:53
-    hosts = None
-    if len(sys.argv) == 3 and sys.argv[1] == "--hosts":
-        hosts = [(h.split(":")[0], int(h.split(":")[1])) for h in sys.argv[2].split(",")]
+def parse_args(argv):
+    """(hosts, test_mode) for a command line. Debug form:
 
-    # --hosts is the debug entry point: it must be able to run alongside the
-    # live monitor so the tool can be verified without a monitoring gap.
-    test_mode = "--hosts" in sys.argv
+        netalert.py --hosts 10.255.255.1:53
+
+    test_mode is True only for a well-formed --hosts run. That form skips the
+    single-instance lock on purpose, so the tool can be verified without a
+    monitoring gap - which makes it important that a malformed one does not
+    also skip it and quietly start a second, unregistered monitor.
+    """
+    if len(argv) == 3 and argv[1] == "--hosts":
+        try:
+            hosts = [(h.split(":")[0], int(h.split(":")[1]))
+                     for h in argv[2].split(",")]
+        except (ValueError, IndexError):
+            return None, False
+        if hosts:
+            return hosts, True
+    return None, False
+
+
+def main():
+    hosts, test_mode = parse_args(sys.argv)
     if not test_mode and not acquire_single_instance():
         return          # another copy is live; the watchdog calls us often
 
@@ -362,7 +410,10 @@ def main():
             f.write(str(os.getpid()))
 
     load_config()
-    log(f"NetAlert started (pid {os.getpid()})")
+    # Test runs are marked: they share this log with the live monitor, and an
+    # unmarked line makes the outage history impossible to read back.
+    log(f"NetAlert started (pid {os.getpid()})"
+        + (" [test mode]" if test_mode else ""))
     output = AlarmOutput()
     try:
         device = output.resolve(refresh=False)
@@ -383,13 +434,7 @@ def main():
         on_up=lambda: (log("Internet is back online"), recovery_chime(output), guard.restore()),
     )
     try:
-        while True:
-            try:
-                monitor.tick()
-            except Exception:
-                log("check failed: "
-                    + " | ".join(traceback.format_exc(limit=3).splitlines()[-3:]))
-            time.sleep(next_delay(monitor))
+        monitor_loop(monitor, guard)
     except BaseException:
         # pythonw has no console, so an unlogged crash is an invisible one.
         log("FATAL: " + " | ".join(traceback.format_exc().splitlines()[-4:]))

@@ -120,25 +120,69 @@ def tone(freq, ms, rate):
     return (wave_ * env).astype(np.float32)
 
 
-def render_wav(text, voice, path, rate_wpm=0):
-    """Synthesise `text` to a wav file. Returns the path."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    script = (
+def _ps_quote(value):
+    """Escape a value for a PowerShell single-quoted string literal.
+
+    Announcement text is data, not code: it comes from holidays.txt, from
+    config.json and from --say. A single apostrophe ("New Year's Day") used
+    to close the literal early, which killed the announcement and let the
+    remainder of the value run as PowerShell.
+    """
+    return str(value).replace("'", "''")
+
+
+def _speech_script(text, voice, path, rate_wpm=0):
+    """The PowerShell one-liner that renders `text` to `path`."""
+    return (
         "Add-Type -AssemblyName System.Speech; "
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        + (f"try {{ $s.SelectVoice('{voice}') }} catch {{}}; " if voice else "")
+        + (f"try {{ $s.SelectVoice('{_ps_quote(voice)}') }} catch {{}}; "
+           if voice else "")
+        # Rate is numeric and unquoted, so it is coerced rather than escaped:
+        # a non-numeric value in config.json raises here instead of reaching
+        # the shell.
         + f"$s.Rate = {int(rate_wpm)}; "
-        f"$s.SetOutputToWaveFile('{path}'); "
-        f"$s.Speak('{text}'); "
+        f"$s.SetOutputToWaveFile('{_ps_quote(path)}'); "
+        f"$s.Speak('{_ps_quote(text)}'); "
         "$s.Dispose()"
     )
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True, text=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if result.returncode != 0 or not os.path.exists(path):
-        raise RuntimeError(f"speech synthesis failed: {result.stderr.strip()[:200]}")
+
+
+RENDER_TIMEOUT = 60      # a wedged synthesiser must not stall the whole loop
+
+
+def render_wav(text, voice, path, rate_wpm=0):
+    """Synthesise `text` to a wav file. Returns the path.
+
+    Written to a temporary file and moved into place only once complete, so a
+    render interrupted half-way (the installer force-stops this process, or
+    the PC loses power) cannot leave a truncated file in the cache. A
+    truncated file would otherwise be treated as a valid cache entry forever
+    and silence that phrase for good.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    partial = f"{path}.{os.getpid()}.part"
+    script = _speech_script(text, voice, partial, rate_wpm)
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=RENDER_TIMEOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0 or not os.path.exists(partial):
+            raise RuntimeError(
+                f"speech synthesis failed: {result.stderr.strip()[:200]}")
+        if os.path.getsize(partial) == 0:
+            raise RuntimeError("speech synthesis produced an empty file")
+        os.replace(partial, path)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"speech synthesis timed out after {RENDER_TIMEOUT}s")
+    finally:
+        if os.path.exists(partial):
+            try:
+                os.remove(partial)
+            except OSError:
+                pass
     return path
 
 
@@ -146,6 +190,37 @@ def cache_path(folder, text, voice):
     """Stable filename for a phrase, so re-rendering is skipped on restart."""
     digest = hashlib.sha1(f"{voice}|{text}".encode("utf-8")).hexdigest()[:16]
     return os.path.join(folder, f"{digest}.wav")
+
+
+def _is_playable(path):
+    """True if `path` is a wav this program can actually read back."""
+    try:
+        if os.path.getsize(path) == 0:
+            return False
+        data, _ = load_wav(path)
+        return len(data) > 0
+    except Exception:
+        return False
+
+
+def cached_wav(folder, text, voice, rate_wpm=0, render=None):
+    """Path to a usable cached rendering of `text`, synthesising if needed.
+
+    Existence alone is not proof of a good cache entry: a file damaged by an
+    interrupted render would otherwise be trusted forever and silence that
+    phrase for good, so an unreadable entry is discarded and rebuilt.
+    """
+    render = render or render_wav
+    path = cache_path(folder, text, voice)
+    if os.path.exists(path):
+        if _is_playable(path):
+            return path
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    render(text, voice, path, rate_wpm)
+    return path
 
 
 class VolumeFloor:

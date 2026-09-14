@@ -2,6 +2,7 @@
 import unittest
 from datetime import date, datetime
 
+import market_schedule as ms
 from market_schedule import (EVENTS_BY_KEY, announcement, expiry_labels,
                              holiday_notice, is_trading_day, next_event,
                              parse_holidays)
@@ -201,6 +202,70 @@ class HolidayNoticeTests(unittest.TestCase):
         self.assertFalse(is_trading_day(date(2026, 9, 14), self.NAMED))
         when, _ = next_event(datetime(2026, 9, 14, 0, 1), ALL, self.NAMED)
         self.assertEqual(when.date(), date(2026, 9, 15))
+
+
+class HolidayCoverageTests(unittest.TestCase):
+    """The calendar is hand-maintained and silently runs out.
+
+    Once past the last listed holiday every real holiday looks like a normal
+    trading day: the tool announces an open market that is shut, and the
+    holiday-eve reminder never fires again. Nothing warned about this.
+    """
+
+    HOLIDAYS = {date(2026, 12, 25): "Christmas",
+                date(2026, 1, 26): "Republic Day"}
+
+    def test_warns_when_the_calendar_is_nearly_exhausted(self):
+        msg = ms.coverage_warning(self.HOLIDAYS, date(2026, 11, 20), min_days=60)
+        self.assertIsNotNone(msg)
+        self.assertIn("2026-12-25", msg)
+
+    def test_silent_while_coverage_is_comfortable(self):
+        self.assertIsNone(
+            ms.coverage_warning(self.HOLIDAYS, date(2026, 6, 1), min_days=60))
+
+    def test_warns_once_the_calendar_has_run_out(self):
+        msg = ms.coverage_warning(self.HOLIDAYS, date(2027, 3, 1), min_days=60)
+        self.assertIsNotNone(msg)
+        self.assertIn("expired", msg)
+
+    def test_warns_when_there_are_no_holidays_at_all(self):
+        self.assertIsNotNone(ms.coverage_warning({}, date(2026, 6, 1)))
+
+    def test_boundary_is_inclusive_of_the_threshold(self):
+        # exactly min_days of cover left is still too little
+        self.assertIsNotNone(
+            ms.coverage_warning(self.HOLIDAYS, date(2026, 10, 26), min_days=60))
+
+
+class HolidayEveDayChoiceTests(unittest.TestCase):
+    """The reminder lands on the last trading day, never on a closed one.
+
+    A comment claimed holiday_eve needed to fire on weekends too. It does
+    not: holiday_notice() scans forward across the weekend, so a Monday
+    holiday is announced on the Friday. These lock that in.
+    """
+
+    def test_fires_on_the_friday_before_a_monday_holiday(self):
+        self.assertIsNotNone(holiday_notice(date(2026, 9, 11), HOLIDAYS))
+
+    def test_silent_on_the_saturday_before_a_monday_holiday(self):
+        self.assertIsNone(holiday_notice(date(2026, 9, 12), HOLIDAYS))
+
+    def test_silent_on_the_sunday_before_a_monday_holiday(self):
+        self.assertIsNone(holiday_notice(date(2026, 9, 13), HOLIDAYS))
+
+    def test_scheduler_never_offers_holiday_eve_on_a_weekend(self):
+        # walk a month of scheduled holiday_eve events: every one is a weekday
+        cursor = datetime(2026, 9, 1, 0, 0)
+        for _ in range(20):
+            found = next_event(cursor, {"holiday_eve"}, HOLIDAYS)
+            if found is None:
+                break
+            when, _event = found
+            self.assertLess(when.weekday(), 5,
+                            f"holiday_eve scheduled on a weekend: {when}")
+            cursor = when
 
 
 if __name__ == "__main__":

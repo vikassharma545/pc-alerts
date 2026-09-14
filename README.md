@@ -82,12 +82,20 @@ cd netalert     ; python -m unittest discover -p "test_*.py"
 cd ..\marketalert ; python -m unittest discover -p "test_*.py"
 ```
 
-102 tests covering outage detection and debouncing, audio device fallback,
-volume handling, the market session calendar, expiry-day and holiday rules,
-scheduling, and single-instance locking.
+154 tests covering outage detection and debouncing, the connectivity probe
+itself, audio device fallback, volume handling (including handing the volume
+back when the monitor is killed mid-outage), speech rendering and its cache,
+PowerShell quoting of announcement text, the market session calendar,
+expiry-day and holiday rules, holiday-calendar expiry, scheduling, log
+rotation, argument parsing, config values that are not numbers, and
+single-instance locking.
 
 ## What is not committed
 
-`config.json`, `*.log`, `pythonw.txt`, `*.pid`, `*.lock` and `voice_cache/` are
-machine-specific or personal and are ignored by git. Everything needed to
-rebuild them is created by `install.ps1` and the first run.
+`config.json`, `*.log`, `*.log.1`, `pythonw.txt`, `*.pid`, `*.lock` and
+`voice_cache/` are machine-specific or personal and are ignored by git.
+Everything needed to rebuild them is created by `install.ps1` and the first
+run.
+
+Each log rotates at 512 KB, keeping one previous generation as `*.log.1`, so
+an always-on tool cannot fill the disk.

@@ -15,7 +15,11 @@ it comes back. Runs hidden in the background.
 - While offline: a two-tone siren every 2 seconds until the connection returns.
   On recovery: a short rising chime, then silence.
 - Every drop and recovery is timestamped in `netalert.log`, so you also get an
-  outage history.
+  outage history. The log rolls over at 512 KB, keeping one previous
+  generation as `netalert.log.1`.
+- If the monitor is killed during an outage — the installer stopping it, or
+  Windows reclaiming memory — the volume it raised for the alarm is put back
+  on the way out, rather than leaving the machine at full volume.
 
 ## Settings
 
@@ -46,7 +50,12 @@ python netalert.py --hosts 127.0.0.1:9999
 ```
 
 Nothing is listening on that port, so it will declare an outage and alarm
-within a few seconds. Ctrl-C to stop.
+within a few seconds. Ctrl-C to stop. Test runs are tagged `[test mode]` in
+the log so they cannot be mistaken for real outages later.
+
+Only a well-formed `--hosts host:port` bypasses the lock. `--hosts` with a
+missing or unparseable value is treated as a normal run, so it can never
+start a second monitor that the watchdog cannot see.
 
 ## Notes
 

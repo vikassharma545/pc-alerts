@@ -16,14 +16,11 @@ THURSDAY = 3  # BSE Sensex weekly/monthly expiry
 class Event:
     """One spoken announcement at a fixed time on a trading day."""
 
-    def __init__(self, key, hour, minute, text, any_day=False):
+    def __init__(self, key, hour, minute, text):
         self.key = key
         self.hour = hour
         self.minute = minute
         self.text = text
-        # any_day events also fire on weekends/holidays - the day before a
-        # holiday is often a Sunday, and the reminder must still be spoken.
-        self.any_day = any_day
 
     def at(self, day):
         return datetime(day.year, day.month, day.day, self.hour, self.minute)
@@ -80,6 +77,29 @@ def parse_holidays(text):
             continue  # ignore malformed lines rather than refusing to start
         days[day] = comment.strip()
     return days
+
+
+def coverage_warning(holidays, today, min_days=60):
+    """Warn when the hand-maintained holiday list is about to run out.
+
+    Past the last listed holiday every real one looks like an ordinary
+    trading day: the tool would announce an open market that is actually
+    shut, and the holiday-eve reminder would never fire again. Being wrong
+    while sounding confident is the failure this whole tool exists to avoid,
+    so it says so out loud instead.
+    """
+    if not holidays:
+        return ("holidays.txt lists no holidays: every day will be treated as "
+                "a trading day. Add the exchange calendar.")
+    last = max(holidays)
+    left = (last - today).days
+    if left < 0:
+        return (f"holidays.txt expired on {last:%Y-%m-%d}: holidays after that "
+                "date are being treated as trading days. Add the new calendar.")
+    if left <= min_days:
+        return (f"holidays.txt runs out on {last:%Y-%m-%d} ({left} days left). "
+                "Add next year's exchange calendar.")
+    return None
 
 
 def next_trading_day(day, holidays, limit=15):
@@ -183,11 +203,11 @@ def next_event(after, enabled, holidays, horizon_days=30):
         return None
     day = after.date()
     for _ in range(horizon_days):
-        trading = is_trading_day(day, holidays)
+        if not is_trading_day(day, holidays):
+            day += timedelta(days=1)
+            continue
         for event in EVENTS:
             if event.key not in enabled:
-                continue
-            if not trading and not event.any_day:
                 continue
             when = event.at(day)
             if when > after:

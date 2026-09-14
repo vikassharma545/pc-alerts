@@ -9,6 +9,8 @@ pythonw.txt
 
 # Outage history and announcement history are personal
 *.log
+# Rotated previous generation, written when a log passes LOG_MAX_BYTES
+*.log.1
 
 # Runtime state
 *.pid

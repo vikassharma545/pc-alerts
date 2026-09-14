@@ -1,9 +1,13 @@
 """Tests for the announcement loop and the audio layer."""
+import os
+import tempfile
 import unittest
 from datetime import date, datetime, timedelta
 
 import marketalert as app
 import speaker as spk
+
+_REAL_LOG = app.log
 
 HOLIDAYS = {date(2026, 9, 14): "Ganesh Chaturthi"}
 CONFIG = {"expiry_nse": True, "expiry_bse": True,
@@ -322,6 +326,216 @@ class AudioHelperTests(unittest.TestCase):
         devices = [{"index": 0, "name": "Speakers", "hostapi_name": "MME",
                     "max_output_channels": 2}]
         self.assertIsNone(spk.pick_output_device(devices, ""))
+
+
+class SpeechScriptQuotingTests(unittest.TestCase):
+    """Announcement text is data, not PowerShell code.
+
+    Text reaches the synthesiser from holidays.txt, config.json and --say.
+    An apostrophe in any of them used to end the PowerShell string literal,
+    which both broke the announcement and let the rest of the value run as
+    code.
+    """
+
+    CACHE = r"C:\voice_cache\phrase.wav"
+
+    def test_apostrophe_in_text_is_escaped(self):
+        script = spk._speech_script("New Year's Day", "", self.CACHE, 0)
+        self.assertIn("$s.Speak('New Year''s Day')", script)
+
+    def test_apostrophe_in_voice_is_escaped(self):
+        script = spk._speech_script("hi", "Bob's Voice", self.CACHE, 0)
+        self.assertIn("SelectVoice('Bob''s Voice')", script)
+
+    def test_apostrophe_in_path_is_escaped(self):
+        script = spk._speech_script("hi", "", r"C:\o'brien\voice.wav", 0)
+        self.assertIn(r"SetOutputToWaveFile('C:\o''brien\voice.wav')", script)
+
+    def test_injection_payload_stays_inside_the_string_literal(self):
+        payload = r"x'); Remove-Item C:\important -Recurse; ('"
+        script = spk._speech_script(payload, "", self.CACHE, 0)
+        # every quote the payload contributes must be doubled, so no odd
+        # number of quotes can terminate the literal early
+        speak = script.split("$s.Speak(")[1]
+        self.assertNotIn("');", speak.replace("'');", ""))
+
+    def test_non_numeric_rate_is_rejected_not_interpolated(self):
+        with self.assertRaises(ValueError):
+            spk._speech_script("hi", "", self.CACHE, "3; rm -r C:")
+
+
+class SpeechRenderingTests(unittest.TestCase):
+    """End-to-end through the real synthesiser: quoting must actually work."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def test_renders_text_containing_an_apostrophe(self):
+        path = os.path.join(self.dir, "apos.wav")
+        spk.render_wav("Markets are closed for New Year's Day.", "", path, 0)
+        data, rate = spk.load_wav(path)
+        self.assertGreater(len(data), 0)
+
+    def test_injected_command_does_not_run(self):
+        marker = os.path.join(self.dir, "PWNED.txt")
+        payload = ("hi'); [IO.File]::WriteAllText('"
+                   + marker.replace("\\", "\\\\") + "','x'); ('")
+        path = os.path.join(self.dir, "inj.wav")
+        spk.render_wav(payload, "", path, 0)
+        self.assertFalse(os.path.exists(marker),
+                         "text from a config file executed as PowerShell")
+
+
+class CachedWavTests(unittest.TestCase):
+    """A damaged cache entry must be re-rendered, never trusted forever.
+
+    wav_for() used to accept any existing file, so a render interrupted
+    part-way left a stub that silenced that phrase permanently - the exact
+    failure mode these tools exist to prevent.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.renders = []
+
+    def fake_render(self, text, voice, path, rate_wpm=0):
+        self.renders.append(text)
+        import wave as w
+        with w.open(path, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(22050)
+            f.writeframes(bytes([1, 0]) * 100)
+        return path
+
+    def test_renders_on_a_cache_miss(self):
+        path = spk.cached_wav(self.dir, "hello", "Hazel", render=self.fake_render)
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(self.renders, ["hello"])
+
+    def test_reuses_a_good_cache_entry(self):
+        spk.cached_wav(self.dir, "hello", "Hazel", render=self.fake_render)
+        spk.cached_wav(self.dir, "hello", "Hazel", render=self.fake_render)
+        self.assertEqual(self.renders, ["hello"], "re-rendered a healthy entry")
+
+    def test_empty_cache_entry_is_re_rendered(self):
+        path = spk.cache_path(self.dir, "hello", "Hazel")
+        open(path, "wb").close()                      # interrupted mid-render
+        spk.cached_wav(self.dir, "hello", "Hazel", render=self.fake_render)
+        self.assertEqual(self.renders, ["hello"])
+        self.assertGreater(os.path.getsize(path), 0)
+
+    def test_truncated_cache_entry_is_re_rendered(self):
+        path = spk.cache_path(self.dir, "hello", "Hazel")
+        with open(path, "wb") as f:
+            f.write(b"RIFF" + bytes(2))                  # half a wav header
+        spk.cached_wav(self.dir, "hello", "Hazel", render=self.fake_render)
+        self.assertEqual(self.renders, ["hello"])
+        data, _ = spk.load_wav(path)
+        self.assertGreater(len(data), 0)
+
+    def test_result_is_always_loadable(self):
+        path = spk.cache_path(self.dir, "hello", "Hazel")
+        open(path, "wb").close()
+        data, rate = spk.load_wav(
+            spk.cached_wav(self.dir, "hello", "Hazel", render=self.fake_render))
+        self.assertEqual(rate, 22050)
+        self.assertEqual(len(data), 100)
+
+
+class LogRotationTests(unittest.TestCase):
+    """An always-on tool must not grow its log without bound."""
+
+    real_log = staticmethod(_REAL_LOG)
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        # other suites replace app.log wholesale, so save the real one
+        self.original = (app.LOG_FILE, app.LOG_MAX_BYTES, app.log)
+        app.log = type(self).real_log
+        app.LOG_FILE = os.path.join(self.dir, "marketalert.log")
+
+    def tearDown(self):
+        app.LOG_FILE, app.LOG_MAX_BYTES, app.log = self.original
+
+    def test_writes_the_message(self):
+        app.log("hello")
+        with open(app.LOG_FILE, encoding="utf-8") as f:
+            self.assertIn("hello", f.read())
+
+    def test_rotates_once_the_log_grows_too_large(self):
+        app.LOG_MAX_BYTES = 200
+        for i in range(40):
+            app.log(f"line {i}")
+        self.assertTrue(os.path.exists(app.LOG_FILE + ".1"))
+        self.assertLessEqual(os.path.getsize(app.LOG_FILE),
+                             app.LOG_MAX_BYTES * 2)
+
+    def test_rotation_keeps_the_most_recent_lines(self):
+        app.LOG_MAX_BYTES = 200
+        for i in range(40):
+            app.log(f"line {i}")
+        with open(app.LOG_FILE, encoding="utf-8") as f:
+            self.assertIn("line 39", f.read())
+
+    def test_small_log_is_not_rotated(self):
+        app.LOG_MAX_BYTES = 100000
+        app.log("hello")
+        self.assertFalse(os.path.exists(app.LOG_FILE + ".1"))
+
+
+class ConfigValueTests(unittest.TestCase):
+    """A broken value must not stop the alerts, just as a broken file does not.
+
+    load_config() already survives a missing or unparseable config.json, but
+    a single mistyped number inside a valid one used to raise while the
+    Announcer was being built, killing the tool at startup.
+    """
+
+    def setUp(self):
+        self.logged = []
+        self.original = app.log
+        app.log = self.logged.append
+
+    def tearDown(self):
+        app.log = self.original
+
+    def test_number_is_read_normally(self):
+        self.assertEqual(app.as_number(90, 50, name="floor"), 90.0)
+
+    def test_numeric_string_is_accepted(self):
+        self.assertEqual(app.as_number("90", 50, name="floor"), 90.0)
+
+    def test_null_falls_back_to_the_default(self):
+        self.assertEqual(app.as_number(None, 50, name="floor"), 50.0)
+
+    def test_nonsense_falls_back_and_says_so(self):
+        self.assertEqual(app.as_number("ninety", 50, name="floor"), 50.0)
+        self.assertTrue(any("floor" in m for m in self.logged),
+                        "a rejected setting must be reported")
+
+    def test_announcer_survives_a_null_volume_floor(self):
+        config = dict(app.DEFAULTS)
+        config["volume_floor_percent"] = None
+        app.Announcer(config)          # must not raise
+
+    def test_announcer_survives_a_nonsense_gain(self):
+        config = dict(app.DEFAULTS)
+        config["voice_gain"] = "loud"
+        app.Announcer(config)
+
+    def test_announcer_survives_a_nonsense_speech_rate(self):
+        config = dict(app.DEFAULTS)
+        config["speech_rate"] = "fast"
+        announcer = app.Announcer(config)
+        self.assertEqual(announcer.rate, app.DEFAULTS["speech_rate"])
+
+    def test_volume_floor_is_clamped_to_a_sane_range(self):
+        config = dict(app.DEFAULTS)
+        config["volume_floor_percent"] = 500
+        self.assertLessEqual(app.Announcer(config).volume.floor, 1.0)
+        config["volume_floor_percent"] = -20
+        self.assertGreaterEqual(app.Announcer(config).volume.floor, 0.0)
 
 
 if __name__ == "__main__":

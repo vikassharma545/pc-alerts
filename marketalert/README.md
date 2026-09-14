@@ -46,7 +46,8 @@ Reflects the rules in force as of September 2026:
 
 - `start_marketalert.vbs` — start it silently (also what runs at login)
 - `stop_marketalert.bat` — stop it
-- `marketalert.log` — what was announced and when
+- `marketalert.log` — what was announced and when; rolls over at 512 KB,
+  keeping one previous generation as `marketalert.log.1`
 - `holidays.txt` — exchange holidays, one per line; the trailing comment is the
   name spoken in the holiday reminder
 - `config.json` — voice, which reminders are on, loudness
@@ -67,6 +68,11 @@ Reflects the rules in force as of September 2026:
 - **Muhurat trading** (Sunday 2026-11-08) is not scheduled — NSE publishes those
   timings by circular closer to the date. Add it manually once known.
 - Holidays are a static list; update `holidays.txt` when NSE publishes 2027.
+  Once it is within 60 days of running out, every startup logs a warning —
+  past the last listed date each real holiday would otherwise look like an
+  ordinary trading day and be announced as an open market.
+- A mistyped number in `config.json` is reported in the log and replaced with
+  its default, rather than stopping the tool.
 
 ## Tests
 

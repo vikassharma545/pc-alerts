@@ -5,18 +5,18 @@ cached, so each event fires instantly at its exact minute.
 """
 import json
 import os
-import subprocess
 import sys
 import time
 import traceback
 from datetime import datetime, timedelta
 
 import market_schedule as ms
-from speaker import (CHIME, Speaker, VolumeFloor, boost, cache_path,
-                     load_wav, render_wav, tone)
+from speaker import (CHIME, Speaker, VolumeFloor, boost, cached_wav,
+                     load_wav, tone)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(BASE_DIR, "marketalert.log")
+LOG_MAX_BYTES = 512 * 1024   # roll over at half a megabyte
 PID_FILE = os.path.join(BASE_DIR, "marketalert.pid")
 # The lock lives outside the project folder on purpose: two copies
 # installed in different directories must still refuse to both run,
@@ -46,6 +46,17 @@ DEFAULTS = {
 
 
 def log(message):
+    """Append to the log, rolling it over before it can grow without bound.
+
+    This process runs for months at a time, so an unrotated log is a slow
+    disk leak. One previous generation is kept: enough to check what was
+    announced last season, bounded enough to forget about.
+    """
+    try:
+        if os.path.getsize(LOG_FILE) >= LOG_MAX_BYTES:
+            os.replace(LOG_FILE, LOG_FILE + ".1")
+    except OSError:
+        pass            # no log yet, or it is busy: appending still works
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{stamp}  {message}\n")
@@ -62,6 +73,21 @@ def load_config():
     except (ValueError, OSError) as e:
         log(f"config.json unreadable ({e}); using defaults")
     return config
+
+
+def as_number(value, default, name="setting"):
+    """A config value as a float, falling back to `default` if it is not one.
+
+    A broken config.json already falls back to defaults rather than stopping
+    the alerts; the same has to hold for one mistyped value inside a file
+    that otherwise parses, which used to raise while the Announcer was being
+    built and take the whole tool down at startup.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        log(f"config.json: {name} is not a number ({value!r}); using {default}")
+        return float(default)
 
 
 def load_holidays():
@@ -98,22 +124,23 @@ class Announcer:
 
     def __init__(self, config):
         self.voice = config["voice"]
-        self.rate = config["speech_rate"]
+        self.rate = int(as_number(config["speech_rate"],
+                                  DEFAULTS["speech_rate"], "speech_rate"))
         self.chime = config["chime_before_voice"]
-        self.gain = float(config.get("voice_gain", 1.0))
+        self.gain = as_number(config.get("voice_gain", 1.0),
+                              DEFAULTS["voice_gain"], "voice_gain")
+        floor = as_number(config["volume_floor_percent"],
+                          DEFAULTS["volume_floor_percent"], "volume_floor_percent")
         self.speaker = Speaker(config["speaker_device"], log=log)
         self.volume = VolumeFloor(
             lambda: _speaker_endpoint(config["speaker_device"]),
-            floor=max(0.0, min(1.0, config["volume_floor_percent"] / 100.0)),
+            floor=max(0.0, min(1.0, floor / 100.0)),
             log=log,
         )
 
     def wav_for(self, text):
         """Path to the cached rendering of `text`, synthesising it if needed."""
-        path = cache_path(CACHE_DIR, text, self.voice)
-        if not os.path.exists(path):
-            render_wav(text, self.voice, path, self.rate)
-        return path
+        return cached_wav(CACHE_DIR, text, self.voice, self.rate)
 
     def prepare(self, text):
         """Make sure `text` is synthesised and cached. Cheap once cached."""
@@ -232,6 +259,10 @@ def main():
     keys = enabled_keys(config)
     log(f"MarketAlert started (pid {os.getpid()}) - {len(keys)} reminders enabled: "
         + ", ".join(sorted(keys)))
+
+    warning = ms.coverage_warning(holidays, datetime.now().date())
+    if warning:
+        log(f"WARNING: {warning}")
 
     announcer = Announcer(config)
     log(f"pre-rendered {announcer.prerender(keys, holidays, config)} phrases "

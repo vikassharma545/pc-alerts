@@ -1,5 +1,6 @@
 """Tests for the NetAlert connection state machine and volume guard."""
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -360,6 +361,211 @@ class SingleInstanceLockTests(unittest.TestCase):
                 return
             time.sleep(0.2)
         self.fail("lock was not released after the holder was killed")
+
+
+class MonitorLoopTests(unittest.TestCase):
+    """However the monitor stops, the user gets their volume back.
+
+    force() raises the speaker to full and unmutes it for the duration of an
+    outage. If the process is killed mid-outage - the installer force-stops
+    it, or Windows kills it for memory, which has happened - the loop must
+    still hand back the level the user had chosen.
+    """
+
+    def setUp(self):
+        self.original_log = netalert.log
+        netalert.log = lambda msg: None
+
+    def tearDown(self):
+        netalert.log = self.original_log
+
+    def build(self, results):
+        endpoint = FakeEndpoint(volume=0.14, mute=1)
+        guard = VolumeGuard(get_endpoint=lambda: endpoint, log=lambda m: None)
+        monitor = Monitor(
+            check=FakeCheck(results),
+            on_down=guard.force,
+            on_alarm=guard.force,
+            on_up=lambda: None,
+            fails_to_offline=2,
+        )
+        return endpoint, guard, monitor
+
+    def test_volume_is_restored_when_the_loop_stops(self):
+        endpoint, guard, monitor = self.build([False] * 4)
+        netalert.monitor_loop(monitor, guard, sleep=lambda s: None, stop_after=4)
+        self.assertEqual(endpoint.volume, 0.14)
+        self.assertEqual(endpoint.mute, 1)
+
+    def test_volume_is_restored_when_the_loop_is_killed(self):
+        endpoint, guard, monitor = self.build([False] * 10)
+
+        def die(seconds):
+            if endpoint.volume == 1.0:      # outage under way
+                raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            netalert.monitor_loop(monitor, guard, sleep=die)
+        self.assertEqual(endpoint.volume, 0.14)
+        self.assertEqual(endpoint.mute, 1)
+
+    def test_volume_is_forced_up_while_the_outage_lasts(self):
+        endpoint, guard, monitor = self.build([False] * 4)
+        levels = []
+        netalert.monitor_loop(monitor, guard,
+                              sleep=lambda s: levels.append(endpoint.volume),
+                              stop_after=3)
+        self.assertIn(1.0, levels, "alarm never forced the speaker audible")
+
+    def test_a_failed_check_is_survived_not_fatal(self):
+        calls = []
+
+        def explodes():
+            calls.append(1)
+            raise OSError("network stack gone")
+
+        endpoint = FakeEndpoint()
+        guard = VolumeGuard(get_endpoint=lambda: endpoint, log=lambda m: None)
+        monitor = Monitor(check=explodes, on_down=lambda: None,
+                          on_alarm=lambda: None, on_up=lambda: None)
+        netalert.monitor_loop(monitor, guard, sleep=lambda s: None, stop_after=3)
+        self.assertEqual(len(calls), 3, "loop stopped at the first failed check")
+
+    def test_nothing_is_restored_if_no_outage_happened(self):
+        endpoint, guard, monitor = self.build([True] * 3)
+        netalert.monitor_loop(monitor, guard, sleep=lambda s: None, stop_after=3)
+        self.assertEqual(endpoint.volume, 0.14)
+        self.assertEqual(endpoint.mute, 1)
+
+
+class ArgumentTests(unittest.TestCase):
+    """--hosts is the debug entry point and deliberately skips the lock.
+
+    Only a well-formed --hosts invocation may do that: a malformed one used
+    to fall through to the real host list while still skipping the lock and
+    the pid file, quietly producing a second unregistered monitor.
+    """
+
+    def test_no_arguments_is_a_normal_run(self):
+        hosts, test_mode = netalert.parse_args(["netalert.py"])
+        self.assertIsNone(hosts)
+        self.assertFalse(test_mode)
+
+    def test_hosts_flag_parses_a_single_host(self):
+        hosts, test_mode = netalert.parse_args(
+            ["netalert.py", "--hosts", "10.255.255.1:53"])
+        self.assertEqual(hosts, [("10.255.255.1", 53)])
+        self.assertTrue(test_mode)
+
+    def test_hosts_flag_parses_several_hosts(self):
+        hosts, _ = netalert.parse_args(
+            ["netalert.py", "--hosts", "1.1.1.1:53,8.8.8.8:53"])
+        self.assertEqual(hosts, [("1.1.1.1", 53), ("8.8.8.8", 53)])
+
+    def test_hosts_without_a_value_is_not_a_test_run(self):
+        # otherwise it skips the lock AND monitors the real hosts: a second
+        # invisible monitor that the watchdog cannot see
+        hosts, test_mode = netalert.parse_args(["netalert.py", "--hosts"])
+        self.assertIsNone(hosts)
+        self.assertFalse(test_mode)
+
+    def test_unparseable_host_is_not_a_test_run(self):
+        hosts, test_mode = netalert.parse_args(["netalert.py", "--hosts", "junk"])
+        self.assertIsNone(hosts)
+        self.assertFalse(test_mode)
+
+
+class InternetUpTests(unittest.TestCase):
+    """The probe itself - previously only the state machine around it was tested."""
+
+    def setUp(self):
+        self.server = socket.socket()
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(1)
+        self.port = self.server.getsockname()[1]
+
+    def tearDown(self):
+        self.server.close()
+
+    def test_reports_up_when_a_host_answers(self):
+        self.assertTrue(netalert.internet_up([("127.0.0.1", self.port)]))
+
+    def test_reports_down_when_nothing_answers(self):
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        closed.close()
+        self.assertFalse(netalert.internet_up([("127.0.0.1", port)]))
+
+    def test_one_live_host_is_enough(self):
+        dead = socket.socket()
+        dead.bind(("127.0.0.1", 0))
+        dead_port = dead.getsockname()[1]
+        dead.close()
+        self.assertTrue(netalert.internet_up(
+            [("127.0.0.1", dead_port), ("127.0.0.1", self.port)]))
+
+    def test_a_dead_host_does_not_add_its_timeout(self):
+        # probes run concurrently: an unroutable host must not serialise
+        started = time.monotonic()
+        netalert.internet_up([("10.255.255.1", 53), ("127.0.0.1", self.port)])
+        self.assertLess(time.monotonic() - started, netalert.CONNECT_TIMEOUT + 1)
+
+    def test_every_probe_socket_is_closed(self):
+        made = []
+        real = socket.socket
+
+        class Tracked(real):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                made.append(self)
+
+        socket.socket = Tracked
+        try:
+            netalert.internet_up([("127.0.0.1", self.port),
+                                  ("10.255.255.1", 53)])
+        finally:
+            socket.socket = real
+        leaked = [s for s in made if s.fileno() != -1]
+        for s in leaked:
+            s.close()
+        self.assertEqual(leaked, [], f"{len(leaked)} probe socket(s) left open")
+
+
+class LogRotationTests(unittest.TestCase):
+    """An always-on tool must not grow its log without bound."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.original = (netalert.LOG_FILE, netalert.LOG_MAX_BYTES)
+        netalert.LOG_FILE = os.path.join(self.dir, "netalert.log")
+
+    def tearDown(self):
+        netalert.LOG_FILE, netalert.LOG_MAX_BYTES = self.original
+
+    def test_writes_the_message(self):
+        netalert.log("hello")
+        with open(netalert.LOG_FILE, encoding="utf-8") as f:
+            self.assertIn("hello", f.read())
+
+    def test_rotates_once_the_log_grows_too_large(self):
+        netalert.LOG_MAX_BYTES = 200
+        for i in range(40):
+            netalert.log(f"line {i}")
+        self.assertTrue(os.path.exists(netalert.LOG_FILE + ".1"))
+        self.assertLessEqual(os.path.getsize(netalert.LOG_FILE),
+                             netalert.LOG_MAX_BYTES * 2)
+
+    def test_rotation_keeps_the_most_recent_lines(self):
+        netalert.LOG_MAX_BYTES = 200
+        for i in range(40):
+            netalert.log(f"line {i}")
+        with open(netalert.LOG_FILE, encoding="utf-8") as f:
+            self.assertIn("line 39", f.read())
+
+    def test_small_log_is_not_rotated(self):
+        netalert.LOG_MAX_BYTES = 100000
+        netalert.log("hello")
+        self.assertFalse(os.path.exists(netalert.LOG_FILE + ".1"))
 
 
 if __name__ == "__main__":
