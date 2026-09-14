@@ -1,9 +1,21 @@
-# Machine-specific and generated - never commit these
-config.json          # per-PC settings (speaker name); copy from config.example.json
-pythonw.txt          # per-PC interpreter path, written by install.ps1
-*.log                # outage history / announcement history is personal
+# Machine-specific and generated files - never commit these.
+# Note: gitignore has no inline comments, so every note needs its own line.
+
+# Per-PC settings (speaker name). Copy from config.example.json.
+config.json
+
+# Per-PC interpreter path, written by install.ps1
+pythonw.txt
+
+# Outage history and announcement history are personal
+*.log
+
+# Runtime state
 *.pid
 *.lock
-voice_cache/         # generated speech, rebuilt automatically on first run
+
+# Generated speech, rebuilt automatically on first run
+voice_cache/
+
 __pycache__/
 *.pyc
