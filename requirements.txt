@@ -1,4 +1,9 @@
-# MarketAlert needs all three; NetAlert needs pycaw + sounddevice + numpy too.
+# Installed without --upgrade (see install.ps1): if a satisfying version is
+# already present it is left alone, so other projects that pin exact versions
+# are not disturbed.
 pycaw>=20240210
 sounddevice>=0.4.6
+
+# numpy is only used for simple waveform maths; any modern 1.x/2.x works.
+# Kept deliberately loose so it never forces a version change.
 numpy>=1.24

@@ -40,7 +40,10 @@ Say "Version     : $(& $python --version 2>&1)"
 
 # --- 2. Dependencies -------------------------------------------------------
 Say "`nInstalling dependencies..." Cyan
-& $python -m pip install --quiet --upgrade --requirement (Join-Path $root 'requirements.txt')
+# Deliberately no --upgrade: this PC may run other projects that pin exact
+# versions of numpy and friends, and silently bumping them would break them.
+# pip leaves an already-satisfying version alone.
+& $python -m pip install --quiet --requirement (Join-Path $root 'requirements.txt')
 if ($LASTEXITCODE -ne 0) { Say "pip install failed" Red; exit 1 }
 Say "Dependencies installed." Green
 
