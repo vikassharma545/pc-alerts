@@ -29,7 +29,11 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 ALARM_DEVICE = ""
 LOG_FILE = os.path.join(BASE_DIR, "netalert.log")
 PID_FILE = os.path.join(BASE_DIR, "netalert.pid")
-LOCK_FILE = os.path.join(BASE_DIR, "netalert.lock")
+# The lock lives outside the project folder on purpose: two copies
+# installed in different directories must still refuse to both run,
+# otherwise a redeploy leaves two alarms sounding at once.
+LOCK_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or BASE_DIR, "pc-alerts")
+LOCK_FILE = os.path.join(LOCK_DIR, "netalert.lock")
 
 _LOCK = None   # held open for the process lifetime
 
@@ -328,7 +332,9 @@ def acquire_single_instance(path=None):
     """
     global _LOCK
     import msvcrt
-    handle = open(path or LOCK_FILE, "a+")
+    target = path or LOCK_FILE
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    handle = open(target, "a+")
     try:
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)

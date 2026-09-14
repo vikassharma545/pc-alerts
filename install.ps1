@@ -52,6 +52,16 @@ foreach ($tool in $tools) {
     Say "`n--- $($tool.Name) ---" Cyan
     if (-not (Test-Path $tool.Dir)) { Say "missing folder $($tool.Dir), skipping" Yellow; continue }
 
+    # Stop any copy already running, including one installed in a different
+    # folder, so this install becomes the single live deployment.
+    $script = "$($tool.Name.ToLower()).py"
+    $existing = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
+                Where-Object { $_.CommandLine -like "*$script*" }
+    foreach ($proc in $existing) {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        Say "stopped running instance (pid $($proc.ProcessId))"
+    }
+
     # config.json from the example, if absent (never overwrite local settings)
     $cfg     = Join-Path $tool.Dir 'config.json'
     $example = Join-Path $tool.Dir 'config.example.json'
