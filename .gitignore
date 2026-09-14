@@ -1,0 +1,9 @@
+# Machine-specific and generated - never commit these
+config.json          # per-PC settings (speaker name); copy from config.example.json
+pythonw.txt          # per-PC interpreter path, written by install.ps1
+*.log                # outage history / announcement history is personal
+*.pid
+*.lock
+voice_cache/         # generated speech, rebuilt automatically on first run
+__pycache__/
+*.pyc

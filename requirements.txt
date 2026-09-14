@@ -1,0 +1,4 @@
+# MarketAlert needs all three; NetAlert needs pycaw + sounddevice + numpy too.
+pycaw>=20240210
+sounddevice>=0.4.6
+numpy>=1.24

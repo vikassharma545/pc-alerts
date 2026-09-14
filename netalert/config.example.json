@@ -1,0 +1,4 @@
+{
+  "_comment": "Name of the speaker to alarm on, exactly as Windows shows it in Sound settings. Leave empty to use whatever output is default. Find names by running: python -c \"import sounddevice as sd; print(sd.query_devices())\"",
+  "alarm_device": ""
+}

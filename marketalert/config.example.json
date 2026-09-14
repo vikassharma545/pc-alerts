@@ -1,0 +1,25 @@
+{
+  "_comment": "speaker_device: name of the speaker to announce on, exactly as Windows Sound settings shows it. Empty = use the default output. List names with: python -c \"import sounddevice as sd; print(sd.query_devices())\"",
+  "voice": "Microsoft Hazel Desktop",
+  "speech_rate": 0,
+  "speaker_device": "",
+  "volume_floor_percent": 90,
+  "chime_before_voice": true,
+  "expiry_nse": true,
+  "expiry_bse": true,
+  "events": {
+    "pre_open": false,
+    "pre_open_limit": false,
+    "pre_open_close": false,
+    "market_open": true,
+    "cas_start": true,
+    "cas_collect": true,
+    "cash_close": true,
+    "cas_end": true,
+    "fno_close": true,
+    "post_close_start": false,
+    "market_closed": false,
+    "holiday_eve": true
+  },
+  "voice_gain": 1.0
+}
