@@ -9,17 +9,23 @@ Enabled now (edit `config.json` to change):
 
 | Time  | Announcement |
 |-------|--------------|
-| 09:15 | Market is now open *(+ "Today is Nifty/Sensex weekly/monthly expiry" when applicable)* |
-| 15:15 | Continuous trading ended for F&O stocks. Closing auction session has started |
-| 15:20 | Closing auction order collection window is now open |
-| 15:30 | Non-F&O stocks have closed. Closing auction order collection is closed |
-| 15:35 | Closing auction session has ended. Closing prices are set |
-| 15:40 | Derivatives market is now closed |
-| 17:00 | *(holiday eve only)* Which holiday is coming and when trading resumes |
+| 09:15 | "Market open." *(+ "Nifty/Sensex weekly/monthly expiry" when applicable)* |
+| 15:15 | "F and O trading ended. Auction started." |
+| 15:20 | "Auction orders open." |
+| 15:30 | "Cash market closed. Auction orders closed." |
+| 15:35 | "Auction ended. Prices set." |
+| 15:40 | "Derivatives closed." |
+| 17:00 | *(holiday eve only)* "Closed tomorrow, 02 October, Mahatma Gandhi Jayanti. Resumes Monday 05 October." |
+
+Wording is deliberately terse — these fire during live trading, so a long
+sentence is still playing when the next thing needs attention. Edit the
+`text` of any event in `market_schedule.py` to reword it.
 
 Available but switched off — flip to `true` in `config.json` to enable:
-`pre_open` (09:00), `pre_open_limit` (09:05), `pre_open_close` (09:10),
-`post_close_start` (15:50), `market_closed` (16:00).
+`pre_open` (09:00, "Pre-open started."), `pre_open_limit` (09:05, "Market
+orders closed. Limit only."), `pre_open_close` (09:10, "Pre-open closed.
+Price discovery."), `post_close_start` (15:50, "Post close started."),
+`market_closed` (16:00, "Post close ended. Market closed.").
 
 Nothing is announced on weekends or exchange holidays.
 
@@ -62,6 +68,9 @@ Reflects the rules in force as of September 2026:
   `volume_floor_percent` (90) and unmuted for the announcement, then put back
   exactly as it was. Speech is also loudness-processed (+7.6 dB) so it carries.
 - Raise `voice_gain` above 1.0 if you want it louder still.
+- `speech_rate` (default `2`) sets the speaking speed on the System.Speech
+  scale of -10 to 10, where 0 is normal. It is part of the cache key, so
+  changing it re-renders every phrase on the next start.
 
 ## Known gaps
 

@@ -186,9 +186,14 @@ def render_wav(text, voice, path, rate_wpm=0):
     return path
 
 
-def cache_path(folder, text, voice):
-    """Stable filename for a phrase, so re-rendering is skipped on restart."""
-    digest = hashlib.sha1(f"{voice}|{text}".encode("utf-8")).hexdigest()[:16]
+def cache_path(folder, text, voice, rate_wpm=0):
+    """Stable filename for a phrase, so re-rendering is skipped on restart.
+
+    The rate is part of the key: without it, changing speech_rate reused the
+    wav rendered at the old speed and the setting appeared to do nothing.
+    """
+    digest = hashlib.sha1(
+        f"{voice}|{rate_wpm}|{text}".encode("utf-8")).hexdigest()[:16]
     return os.path.join(folder, f"{digest}.wav")
 
 
@@ -211,7 +216,7 @@ def cached_wav(folder, text, voice, rate_wpm=0, render=None):
     phrase for good, so an unreadable entry is discarded and rebuilt.
     """
     render = render or render_wav
-    path = cache_path(folder, text, voice)
+    path = cache_path(folder, text, voice, rate_wpm)
     if os.path.exists(path):
         if _is_playable(path):
             return path

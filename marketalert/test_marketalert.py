@@ -49,7 +49,7 @@ class RunLoopTests(unittest.TestCase):
 
     def test_announces_market_open_at_the_right_time(self):
         clock = self.run_from(datetime(2026, 9, 11, 9, 14, 30))
-        self.assertEqual(self.announcer.said, ["Market is now open."])
+        self.assertEqual(self.announcer.said, ["Market open."])
         self.assertGreaterEqual(clock.now, datetime(2026, 9, 11, 9, 15))
 
     def test_waits_rather_than_announcing_early(self):
@@ -59,21 +59,21 @@ class RunLoopTests(unittest.TestCase):
     def test_announces_events_in_order(self):
         self.run_from(datetime(2026, 9, 11, 9, 0), stop_after=2)
         self.assertEqual(self.announcer.said,
-                         ["Market is now open.", "Derivatives market is now closed."])
+                         ["Market open.", "Derivatives closed."])
 
     def test_skips_events_slept_through(self):
         # Starting well after the open: it must not shout a stale announcement
         self.run_from(datetime(2026, 9, 11, 12, 0), stop_after=1)
-        self.assertEqual(self.announcer.said, ["Derivatives market is now closed."])
+        self.assertEqual(self.announcer.said, ["Derivatives closed."])
 
     def test_event_within_grace_window_still_fires(self):
         # Launched 30s after the open (e.g. PC finished booting): still announce
         self.run_from(datetime(2026, 9, 11, 9, 15, 30), stop_after=1)
-        self.assertEqual(self.announcer.said, ["Market is now open."])
+        self.assertEqual(self.announcer.said, ["Market open."])
 
     def test_event_older_than_grace_is_not_announced_late(self):
         self.run_from(datetime(2026, 9, 11, 9, 20), stop_after=1)
-        self.assertEqual(self.announcer.said, ["Derivatives market is now closed."])
+        self.assertEqual(self.announcer.said, ["Derivatives closed."])
 
     def test_expiry_day_open_mentions_expiry(self):
         self.run_from(datetime(2026, 9, 15, 9, 14), stop_after=1)
@@ -105,7 +105,7 @@ class RunLoopTests(unittest.TestCase):
         config = {"expiry_nse": True, "expiry_bse": True,
                   "events": {"market_open": False, "fno_close": True}}
         self.run_from(datetime(2026, 9, 11, 9, 0), stop_after=1, config=config)
-        self.assertEqual(self.announcer.said, ["Derivatives market is now closed."])
+        self.assertEqual(self.announcer.said, ["Derivatives closed."])
 
 
 class RecordingAnnouncer(FakeAnnouncer):
@@ -131,9 +131,9 @@ class PrerenderTests(unittest.TestCase):
         clock = FakeClock(datetime(2026, 9, 11, 9, 0))
         app.run(CONFIG, HOLIDAYS, announcer, now=clock, sleep=clock.sleep,
                 stop_after=1)
-        self.assertIn("Market is now open.", announcer.prepared)
+        self.assertIn("Market open.", announcer.prepared)
         # prepared strictly before it was spoken
-        self.assertEqual(announcer.said, ["Market is now open."])
+        self.assertEqual(announcer.said, ["Market open."])
 
     def test_expiry_variant_is_prepared_not_just_the_plain_text(self):
         announcer = RecordingAnnouncer()
@@ -166,7 +166,7 @@ class PrerenderTests(unittest.TestCase):
         joined = " | ".join(rendered)
         self.assertIn("Nifty weekly expiry", joined)
         self.assertIn("Sensex weekly expiry", joined)
-        self.assertIn("Market is now open.", rendered)
+        self.assertIn("Market open.", rendered)
 
     def test_prerender_deduplicates_repeated_phrases(self):
         rendered = []
@@ -536,6 +536,44 @@ class ConfigValueTests(unittest.TestCase):
         self.assertLessEqual(app.Announcer(config).volume.floor, 1.0)
         config["volume_floor_percent"] = -20
         self.assertGreaterEqual(app.Announcer(config).volume.floor, 0.0)
+
+
+class CacheKeyTests(unittest.TestCase):
+    """Speech rate belongs in the cache key.
+
+    The key was (voice, text) only, so changing speech_rate in config.json
+    silently reused the wav rendered at the old rate and the setting
+    appeared to do nothing.
+    """
+
+    def test_same_phrase_same_rate_is_one_entry(self):
+        self.assertEqual(spk.cache_path("c", "hello", "Hazel", 2),
+                         spk.cache_path("c", "hello", "Hazel", 2))
+
+    def test_different_rate_is_a_different_entry(self):
+        self.assertNotEqual(spk.cache_path("c", "hello", "Hazel", 0),
+                            spk.cache_path("c", "hello", "Hazel", 2))
+
+    def test_voice_still_separates_entries(self):
+        self.assertNotEqual(spk.cache_path("c", "hello", "Hazel", 2),
+                            spk.cache_path("c", "hello", "Zira", 2))
+
+    def test_cached_wav_re_renders_when_the_rate_changes(self):
+        import tempfile as tf
+        folder, rendered = tf.mkdtemp(), []
+
+        def fake(text, voice, path, rate_wpm=0):
+            rendered.append(rate_wpm)
+            import wave as w
+            with w.open(path, "wb") as f:
+                f.setnchannels(1); f.setsampwidth(2); f.setframerate(22050)
+                f.writeframes(bytes([1, 0]) * 50)
+            return path
+
+        spk.cached_wav(folder, "hello", "Hazel", 0, render=fake)
+        spk.cached_wav(folder, "hello", "Hazel", 2, render=fake)
+        spk.cached_wav(folder, "hello", "Hazel", 2, render=fake)
+        self.assertEqual(rendered, [0, 2], "rate change did not force a re-render")
 
 
 if __name__ == "__main__":

@@ -114,7 +114,7 @@ class AnnouncementTests(unittest.TestCase):
 
     def test_open_on_expiry_day_mentions_expiry(self):
         text = announcement(EVENTS_BY_KEY["market_open"], date(2026, 9, 15), HOLIDAYS)
-        self.assertIn("Market is now open", text)
+        self.assertIn("Market open", text)
         self.assertIn("Nifty weekly expiry", text)
 
     def test_open_on_ordinary_day_has_no_expiry_note(self):
@@ -266,6 +266,57 @@ class HolidayEveDayChoiceTests(unittest.TestCase):
             self.assertLess(when.weekday(), 5,
                             f"holiday_eve scheduled on a weekend: {when}")
             cursor = when
+
+
+class MessageLengthTests(unittest.TestCase):
+    """Announcements are kept short so they are over quickly.
+
+    These fire during live trading; a long sentence is still playing when
+    the next thing needs attention.
+    """
+
+    EXPECTED = {
+        "pre_open":         "Pre-open started.",
+        "pre_open_limit":   "Market orders closed. Limit only.",
+        "pre_open_close":   "Pre-open closed. Price discovery.",
+        "market_open":      "Market open.",
+        "cas_start":        "F and O trading ended. Auction started.",
+        "cas_collect":      "Auction orders open.",
+        "cash_close":       "Cash market closed. Auction orders closed.",
+        "cas_end":          "Auction ended. Prices set.",
+        "fno_close":        "Derivatives closed.",
+        "post_close_start": "Post close started.",
+        "market_closed":    "Post close ended. Market closed.",
+    }
+
+    def test_every_event_uses_the_short_wording(self):
+        for key, expected in self.EXPECTED.items():
+            self.assertEqual(ms.EVENTS_BY_KEY[key].text, expected, key)
+
+    def test_no_announcement_is_long_winded(self):
+        for key, event in ms.EVENTS_BY_KEY.items():
+            if event.text:
+                self.assertLessEqual(len(event.text), 45, f"{key} is too long")
+
+    def test_expiry_suffix_is_terse(self):
+        text = announcement(EVENTS_BY_KEY["market_open"], date(2026, 9, 15), HOLIDAYS)
+        self.assertEqual(text, "Market open. Nifty weekly expiry.")
+
+    def test_holiday_notice_is_terse(self):
+        named = {date(2026, 10, 2): "Mahatma Gandhi Jayanti"}
+        text = holiday_notice(date(2026, 10, 1), named)
+        self.assertEqual(
+            text,
+            "Closed tomorrow, 02 October, Mahatma Gandhi Jayanti. "
+            "Resumes Monday 05 October.")
+
+    def test_holiday_notice_still_names_a_later_holiday_by_weekday(self):
+        named = {date(2026, 9, 14): "Ganesh Chaturthi"}
+        text = holiday_notice(date(2026, 9, 11), named)
+        self.assertEqual(
+            text,
+            "Closed Monday, 14 September, Ganesh Chaturthi. "
+            "Resumes Tuesday 15 September.")
 
 
 if __name__ == "__main__":

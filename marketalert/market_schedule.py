@@ -29,31 +29,32 @@ class Event:
         return f"<Event {self.key} {self.hour:02d}:{self.minute:02d}>"
 
 
+# Wording is deliberately terse. These fire during live trading, so an
+# announcement that takes several seconds is still playing when the next
+# thing needs attention.
 EVENTS = [
     Event("pre_open", 9, 0,
-          "Pre-open session has started."),
+          "Pre-open started."),
     Event("pre_open_limit", 9, 5,
-          "Market orders are now closed. Limit orders only."),
+          "Market orders closed. Limit only."),
     Event("pre_open_close", 9, 10,
-          "Pre-open order entry is closed. Price discovery in progress."),
+          "Pre-open closed. Price discovery."),
     Event("market_open", 9, 15,
-          "Market is now open."),
+          "Market open."),
     Event("cas_start", 15, 15,
-          "Continuous trading has ended for F and O stocks. "
-          "Closing auction session has started."),
+          "F and O trading ended. Auction started."),
     Event("cas_collect", 15, 20,
-          "Closing auction order collection window is now open."),
+          "Auction orders open."),
     Event("cash_close", 15, 30,
-          "Non F and O stocks have closed. "
-          "Closing auction order collection is closed."),
+          "Cash market closed. Auction orders closed."),
     Event("cas_end", 15, 35,
-          "Closing auction session has ended. Closing prices are set."),
+          "Auction ended. Prices set."),
     Event("fno_close", 15, 40,
-          "Derivatives market is now closed."),
+          "Derivatives closed."),
     Event("post_close_start", 15, 50,
-          "Post close session has started."),
+          "Post close started."),
     Event("market_closed", 16, 0,
-          "Post close session has ended. Market is fully closed."),
+          "Post close ended. Market closed."),
     # Fires only on the last trading day before an exchange holiday; on any
     # other day announcement() returns None and the loop stays silent.
     Event("holiday_eve", 17, 0, ""),
@@ -137,9 +138,9 @@ def holiday_notice(day, holidays):
     for d in closed:
         when = "tomorrow" if (d - day).days == 1 else d.strftime("%A")
         name = holidays.get(d) if isinstance(holidays, dict) else ""
-        parts.append(f"{when}, {d.strftime('%d %B')}" + (f", for {name}" if name else ""))
-    return ("Markets are closed " + ", and ".join(parts)
-            + f". Trading resumes on {cursor.strftime('%A %d %B')}.")
+        parts.append(f"{when}, {d.strftime('%d %B')}" + (f", {name}" if name else ""))
+    return ("Closed " + ", and ".join(parts)
+            + f". Resumes {cursor.strftime('%A %d %B')}.")
 
 
 def is_trading_day(day, holidays):
@@ -190,7 +191,7 @@ def announcement(event, day, holidays, expiry_nse=True, expiry_bse=True):
     if event.key == "market_open":
         labels = expiry_labels(day, holidays, expiry_nse, expiry_bse)
         if labels:
-            text += " Today is " + " and ".join(labels) + "."
+            text += " " + " and ".join(labels) + "."
     return text
 
 
